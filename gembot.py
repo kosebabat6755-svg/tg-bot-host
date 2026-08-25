@@ -616,8 +616,14 @@ def main():
             logger.error(f"[supervisor] bot crashed: {e} — restarting in 10s")
             time.sleep(10)
 
-    asyncio.create_task(background_push(force=True))
-    logger.info("[bye] run complete, state pushed. Handoff to next scheduled run.")
+    # Final state push (synchronous — event loop already closed here)
+    try:
+        git_push_state(True, "final state push at shift end")
+        logger.info("[bye] run complete, final state pushed synchronously.")
+    except Exception as e:
+        logger.error(f"[bye] final push failed: {e}")
+
+    logger.info("Handoff to next scheduled run.")
 
 if __name__ == "__main__":
     main()
