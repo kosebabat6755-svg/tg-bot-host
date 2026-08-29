@@ -548,7 +548,8 @@ async def respond_to_message(msg, bot_info):
                         try:
                             chunk = json.loads(data_str)
                             delta = chunk.get("choices", [{}])[0].get("delta", {})
-                            content = delta.get("content") or delta.get("reasoning_content")
+                            # FIX 2026-08-29 (also applied to L551): drop reasoning_content
+                            content = delta.get("content")
                             if content:
                                 accumulated += content
                         except json.JSONDecodeError:
