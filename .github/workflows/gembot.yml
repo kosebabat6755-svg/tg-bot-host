@@ -35,7 +35,7 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           ROUTER_URL: ${{ secrets.ROUTER_URL }}
           ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
-          MODEL_NAME: "DS1"
+          MODEL_NAME: "Chatgem"
           STATE_DIR: ${{ github.workspace }}
           RUN_MINUTES: "285"
           STATE_PUSH_INTERVAL: "5"
