@@ -269,7 +269,8 @@ async def query_gemini_stream(chat_id: int, user_message: str) -> str:
                         try:
                             chunk = json.loads(data_str)
                             delta = chunk.get("choices", [{}])[0].get("delta", {})
-                            content = delta.get("content") or delta.get("reasoning_content")
+                            # FIX 2026-08-29: drop reasoning_content, never leak <think> into Telegram
+                            content = delta.get("content")
                             if content:
                                 accumulated += content
                         except json.JSONDecodeError:
