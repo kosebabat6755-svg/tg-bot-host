@@ -208,6 +208,8 @@ Rules:
 {v_prompt}
 {lang_rule}
 {profanity_rule}
+- HARD RULE: NEVER produce internal reasoning, thinking blocks, <think> chains, "let me think..." preambles, or any meta-commentary about your own thought process. Your final reply must be the PURE, FINAL answer only — no drafts, no reasoning, no analysis of the user's question visible to them. If you have thoughts, do them silently and output only the response. NO exceptions for any persona.
+
 - OVERRIDE PREVIOUS CONVERSATION TONE: Ignore any previous foul language, swearing, or roasts present in the conversation history if the current personality instruction requires being polite, wholesome, or professional. Always prioritize the CURRENT system personality over historical context.
 """
 
@@ -251,7 +253,11 @@ async def query_gemini_stream(chat_id: int, user_message: str) -> str:
     payload = {
         "model": MODEL_NAME,
         "messages": messages,
-        "stream": True
+        "stream": True,
+        # Disable any internal reasoning/thinking that 9router may pass through
+        "reasoning": {"effort": "low"},
+        "include_reasoning": False,
+        "temperature": 0.9
     }
 
     accumulated = ""
@@ -530,7 +536,11 @@ async def respond_to_message(msg, bot_info):
     payload = {
         "model": MODEL_NAME,
         "messages": messages,
-        "stream": True
+        "stream": True,
+        # Disable any internal reasoning/thinking that 9router may pass through
+        "reasoning": {"effort": "low"},
+        "include_reasoning": False,
+        "temperature": 0.9
     }
 
     accumulated = ""
