@@ -153,7 +153,8 @@ DEFAULT_SETTINGS = {
     "profanity_filter": False,
     "language_mode": "auto",  # options: auto, en_only, fa_only,
     "max_reply_sentences": 2,
-    "debug_mode": True
+    "debug_mode": True,
+    "model": MODEL_NAME
 }
 
 def load_settings() -> dict:
@@ -251,7 +252,7 @@ async def query_gemini_stream(chat_id: int, user_message: str) -> str:
         "Content-Type": "application/json"
     }
     payload = {
-        "model": MODEL_NAME,
+        "model": bot_settings.get("model", MODEL_NAME),
         "messages": messages,
         "stream": True,
         # Disable any internal reasoning/thinking that 9router may pass through
@@ -311,6 +312,7 @@ def get_control_panel_markup() -> InlineKeyboardMarkup:
             InlineKeyboardButton(f"🤬 Profanity: {profanity_emoji}", callback_data="toggle_profanity")
         ],
         [InlineKeyboardButton(f"🐛 Debug Mode: {debug_emoji}", callback_data="toggle_debug")],
+        [InlineKeyboardButton(f"🧠 Model: {s.get('model', MODEL_NAME)}", callback_data="noop_model")],
         [
             InlineKeyboardButton("🧹 Clear Chat RAM", callback_data="clear_history"),
             InlineKeyboardButton("🔄 Refresh Panel", callback_data="refresh_panel")
@@ -331,6 +333,60 @@ async def cmd_panel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     text = "🎛️ **GemAI Command Center** 🎛️\n\nManage all bot settings instantly below:"
     await msg.reply_text(text, reply_markup=get_control_panel_markup(), parse_mode="Markdown")
+
+def fetch_router_models() -> list:
+    """Pull the live model list from 9router. Returns [] on failure."""
+    try:
+        req = urllib.request.Request(
+            f"{ROUTER_URL}/models",
+            headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "User-Agent": "gembot"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode())
+        return [m.get("id", "") for m in data.get("data", []) if m.get("id")]
+    except Exception as e:
+        logger.error(f"[model] failed to fetch model list: {e}")
+        return []
+
+async def cmd_model(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin: /model  -> show current + list;  /model <name> -> switch."""
+    msg = update.message
+    if not msg or not msg.from_user:
+        return
+    if not is_admin_user(msg.from_user.id, msg.from_user.username):
+        await msg.reply_text("stfu you ain't my admin nigga 🖕😂")
+        return
+
+    global bot_settings
+    current = bot_settings.get("model", MODEL_NAME)
+    args = ctx.args or []
+
+    if not args:
+        models = fetch_router_models()
+        listing = ", ".join(models[:60]) if models else "(router list unavailable)"
+        await msg.reply_text(
+            f"🧠 Current model: **{current}**\n"
+            f"📚 {len(models)} models available\n\n"
+            f"{listing}\n\n"
+            f"Switch: `/model <name>`",
+            parse_mode="Markdown"
+        )
+        return
+
+    wanted = " ".join(args).strip()
+    models = fetch_router_models()
+    if models:
+        match = next((m for m in models if m.lower() == wanted.lower()), None)
+        if not match:
+            near = [m for m in models if m.lower().startswith(wanted.lower())][:5]
+            hint = f" Did you mean: {', '.join(near)}?" if near else ""
+            await msg.reply_text(f"❌ `{wanted}` not on the router list.{hint}", parse_mode="Markdown")
+            return
+        wanted = match
+
+    bot_settings["model"] = wanted
+    save_settings(bot_settings)
+    asyncio.create_task(background_push(force=True, message=f"/model switch -> {wanted}"))
+    await msg.reply_text(f"🧠 Model switched to **{wanted}** — live from the next reply, survives reboots. ✅", parse_mode="Markdown")
 
 async def cmd_sethome(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = update.message
@@ -534,7 +590,7 @@ async def respond_to_message(msg, bot_info):
         "Content-Type": "application/json"
     }
     payload = {
-        "model": MODEL_NAME,
+        "model": bot_settings.get("model", MODEL_NAME),
         "messages": messages,
         "stream": True,
         # Disable any internal reasoning/thinking that 9router may pass through
@@ -613,6 +669,7 @@ def main():
     app.add_handler(CommandHandler("panel", cmd_panel))
     app.add_handler(CommandHandler("settings", cmd_panel))
     app.add_handler(CommandHandler("sethome", cmd_sethome))
+    app.add_handler(CommandHandler("model", cmd_model))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
