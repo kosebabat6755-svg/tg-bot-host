@@ -28,6 +28,8 @@ from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, Callb
 # ---------------------------------------------------------------- config
 TOKEN = os.environ.get("TG_BOT_TOKEN", "")
 MODEL_NAME = os.environ.get("MODEL_NAME", "DS1")
+# Auto-switch chain if the active model dies mid-run (HTTP error / empty / timeout)
+FALLBACK_MODELS = ["Chatgem", "DS1", "Nvidia-NEM"]
 ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID", "6592796294"))
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "Mokingh")
 
@@ -247,26 +249,44 @@ async def query_gemini_stream(chat_id: int, user_message: str) -> str:
     system_prompt = build_system_prompt()
     messages = [{"role": "system", "content": system_prompt}] + context_history[chat_id_str]
 
+    reply_txt = await call_router_stream(messages)
+    if reply_txt is None:
+        return "network fried af rn 💀"
+
+    reply = reply_txt or "nah stfu this you nigga? 😂👆"
+    context_history[chat_id_str].append({"role": "assistant", "content": reply})
+    trim_history_to_64k(chat_id_str)
+    save_history(context_history)
+
+    return reply
+
+async def call_router_stream(messages) -> str | None:
+    """Stream a chat completion, falling back through FALLBACK_MODELS if the
+    active model dies (non-200 / exception / empty). Returns text or None."""
+    global bot_settings
+    primary = bot_settings.get("model", MODEL_NAME)
+    chain = [primary] + [m for m in FALLBACK_MODELS if m != primary]
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}",
         "Content-Type": "application/json"
     }
-    payload = {
-        "model": bot_settings.get("model", MODEL_NAME),
-        "messages": messages,
-        "stream": True,
-        # Disable any internal reasoning/thinking that 9router may pass through
-        "reasoning": {"effort": "low"},
-        "include_reasoning": False,
-        "temperature": 0.9
-    }
-
-    accumulated = ""
-    try:
-        limits = httpx.Limits(max_keepalive_connections=5, max_connections=10)
-        async with httpx.AsyncClient(timeout=httpx.Timeout(45.0, connect=10.0), limits=limits) as client:
-            async with client.stream("POST", f"{ROUTER_URL}/chat/completions", headers=headers, json=payload) as resp:
-                if resp.status_code == 200:
+    for model in chain:
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": True,
+            "reasoning": {"effort": "low"},
+            "include_reasoning": False,
+            "temperature": 0.9
+        }
+        accumulated = ""
+        try:
+            limits = httpx.Limits(max_keepalive_connections=5, max_connections=10)
+            async with httpx.AsyncClient(timeout=httpx.Timeout(45.0, connect=10.0), limits=limits) as client:
+                async with client.stream("POST", f"{ROUTER_URL}/chat/completions", headers=headers, json=payload) as resp:
+                    if resp.status_code != 200:
+                        logger.error(f"[fallback] {model} -> HTTP {resp.status_code}, trying next")
+                        continue
                     async for line in resp.aiter_lines():
                         if not line or not line.startswith("data: "):
                             continue
@@ -276,24 +296,22 @@ async def query_gemini_stream(chat_id: int, user_message: str) -> str:
                         try:
                             chunk = json.loads(data_str)
                             delta = chunk.get("choices", [{}])[0].get("delta", {})
-                            # FIX 2026-08-29: drop reasoning_content, never leak <think> into Telegram
+                            # never leak reasoning_content into Telegram
                             content = delta.get("content")
                             if content:
                                 accumulated += content
                         except json.JSONDecodeError:
                             pass
-                else:
-                    logger.error(f"9Router error status: {resp.status_code}")
-    except Exception as e:
-        logger.error(f"9Router streaming error: {e}")
-        return "network fried af rn 💀"
+        except Exception as e:
+            logger.error(f"[fallback] {model} errored: {e}, trying next")
+            continue
+        if accumulated.strip():
+            if model != primary:
+                logger.info(f"[fallback] answered on backup model {model} (primary {primary} dead)")
+            return accumulated.strip()
+        logger.error(f"[fallback] {model} returned empty, trying next")
+    return None
 
-    reply = accumulated.strip() if accumulated else "nah stfu this you nigga? 😂👆"
-    context_history[chat_id_str].append({"role": "assistant", "content": reply})
-    trim_history_to_64k(chat_id_str)
-    save_history(context_history)
-
-    return reply
 
 def get_control_panel_markup() -> InlineKeyboardMarkup:
     s = bot_settings
@@ -585,46 +603,11 @@ async def respond_to_message(msg, bot_info):
 
     messages += context_history[chat_id_str]
 
-    headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": bot_settings.get("model", MODEL_NAME),
-        "messages": messages,
-        "stream": True,
-        # Disable any internal reasoning/thinking that 9router may pass through
-        "reasoning": {"effort": "low"},
-        "include_reasoning": False,
-        "temperature": 0.9
-    }
-
-    accumulated = ""
-    try:
-        limits = httpx.Limits(max_keepalive_connections=5, max_connections=10)
-        async with httpx.AsyncClient(timeout=httpx.Timeout(45.0, connect=10.0), limits=limits) as client:
-            async with client.stream("POST", f"{ROUTER_URL}/chat/completions", headers=headers, json=payload) as resp:
-                if resp.status_code == 200:
-                    async for line in resp.aiter_lines():
-                        if not line or not line.startswith("data: "):
-                            continue
-                        data_str = line[6:].strip()
-                        if data_str == "[DONE]":
-                            break
-                        try:
-                            chunk = json.loads(data_str)
-                            delta = chunk.get("choices", [{}])[0].get("delta", {})
-                            # FIX 2026-08-29 (also applied to L551): drop reasoning_content
-                            content = delta.get("content")
-                            if content:
-                                accumulated += content
-                        except json.JSONDecodeError:
-                            pass
-    except Exception as e:
-        logger.error(f"9Router streaming error: {e}")
+    reply_text = await call_router_stream(messages)
+    if reply_text is None:
         reply_text = "network fried af rn 💀"
     else:
-        reply_text = accumulated.strip() if accumulated else "nah stfu this you nigga? 😂👆"
+        reply_text = reply_text or "nah stfu this you nigga? 😂👆"
 
     context_history[chat_id_str].append({"role": "assistant", "content": reply_text})
     trim_history_to_64k(chat_id_str)
