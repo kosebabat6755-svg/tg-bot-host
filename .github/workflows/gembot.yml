@@ -41,3 +41,5 @@ jobs:
           STATE_PUSH_INTERVAL: "5"
           GITHUB_TOKEN: ${{ github.token }}
         run: python gembot.py
+
+# schedule re-registration touch
