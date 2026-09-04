@@ -270,6 +270,7 @@ async def call_router_stream(messages) -> str | None:
         "Authorization": f"Bearer {OPENAI_API_KEY}",
         "Content-Type": "application/json"
     }
+    RETRIES_PER_MODEL = 15
     for model in chain:
         payload = {
             "model": model,
@@ -285,7 +286,41 @@ async def call_router_stream(messages) -> str | None:
             async with httpx.AsyncClient(timeout=httpx.Timeout(45.0, connect=10.0), limits=limits) as client:
                 async with client.stream("POST", f"{ROUTER_URL}/chat/completions", headers=headers, json=payload) as resp:
                     if resp.status_code != 200:
-                        logger.error(f"[fallback] {model} -> HTTP {resp.status_code}, trying next")
+                        logger.error(f"[retry] {model} -> HTTP {resp.status_code}")
+                        if resp.status_code in (429, 500, 502, 503, 504):
+                            got = False
+                            for attempt in range(1, RETRIES_PER_MODEL + 1):
+                                wait = min(2 * attempt, 20)
+                                logger.info(f"[retry] {model} attempt {attempt}/{RETRIES_PER_MODEL} (HTTP {resp.status_code}), wait {wait}s")
+                                await asyncio.sleep(wait)
+                                try:
+                                    async with client.stream("POST", f"{ROUTER_URL}/chat/completions", headers=headers, json=payload) as rr:
+                                        if rr.status_code == 200:
+                                            async for line in rr.aiter_lines():
+                                                if not line or not line.startswith("data: "):
+                                                    continue
+                                                ds = line[6:].strip()
+                                                if ds == "[DONE]":
+                                                    break
+                                                try:
+                                                    ch = json.loads(ds)
+                                                    c = ch.get("choices", [{}])[0].get("delta", {}).get("content")
+                                                    if c:
+                                                        accumulated += c
+                                                except json.JSONDecodeError:
+                                                    pass
+                                            if accumulated.strip():
+                                                got = True
+                                                break
+                                        else:
+                                            logger.error(f"[retry] {model} attempt {attempt}/{RETRIES_PER_MODEL} -> HTTP {rr.status_code}")
+                                except Exception as e:
+                                    logger.error(f"[retry] {model} attempt {attempt}/{RETRIES_PER_MODEL} errored: {e}")
+                            if got:
+                                if model != primary:
+                                    logger.info(f"[fallback] answered on backup model {model} after retries (primary {primary} dead)")
+                                return accumulated.strip()
+                            logger.error(f"[fallback] {model} exhausted {RETRIES_PER_MODEL} retries, trying next model")
                         continue
                     async for line in resp.aiter_lines():
                         if not line or not line.startswith("data: "):
