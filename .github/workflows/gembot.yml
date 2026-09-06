@@ -37,7 +37,7 @@ jobs:
           ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
           MODEL_NAME: "Chatgem"
           STATE_DIR: ${{ github.workspace }}
-          RUN_MINUTES: "285"
+          RUN_MINUTES: "267"
           STATE_PUSH_INTERVAL: "5"
           GITHUB_TOKEN: ${{ github.token }}
         run: python gembot.py
